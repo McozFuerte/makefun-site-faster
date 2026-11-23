@@ -213,6 +213,7 @@ const ORDERED = /^(\d{1,9})\. (.*)$/;
 const CONTINUED = /^ {2,}\S/;
 const TRIM_LINE = /^[ \t]+|[ \t]+$/g;
 const WS_RE = /\s/;
+const WORDS = /\S+/g;
 
 /** Whether a code unit is JS `\s` whitespace (exactly, for word counting). */
 function isWs(c) {
@@ -281,10 +282,12 @@ function findSingleStar(s, from) {
 /** Markdown's inline specials (backslash, backtick, star, bracket): a string with none renders as its escaped self. */
 const MD_SPECIAL = new RegExp('[`\\\\*\\[]', '');
 
-/** `s` rendered inline; `link(target)` is a link's href. */
-function inline(s, link) {
-  if (!MD_SPECIAL.test(s)) return esc(s);
-  const out = [];
+/** `s` rendered inline into `out` (an array of strings); `link(target)` is a link's href. */
+function inline(s, link, out) {
+  if (!MD_SPECIAL.test(s)) {
+    out.push(esc(s));
+    return;
+  }
   let i = 0;
   const n = s.length;
   let run = 0;
@@ -306,7 +309,7 @@ function inline(s, link) {
       const j = s.indexOf('`', i + 1);
       if (j > i + 1) {
         if (i > run) out.push(esc(s.slice(run, i)));
-        out.push('<code>' + esc(s.slice(i + 1, j)) + '</code>');
+        out.push('<code>', esc(s.slice(i + 1, j)), '</code>');
         i = j + 1;
         run = i;
       } else i++;
@@ -317,7 +320,9 @@ function inline(s, link) {
         const j = findUnescaped(s, '**', i + 2);
         if (j > i + 2) {
           if (i > run) out.push(esc(s.slice(run, i)));
-          out.push('<strong>' + inline(s.slice(i + 2, j), link) + '</strong>');
+          out.push('<strong>');
+          inline(s.slice(i + 2, j), link, out);
+          out.push('</strong>');
           i = j + 2;
           run = i;
         } else i += 2;
@@ -326,7 +331,9 @@ function inline(s, link) {
       const j = findSingleStar(s, i + 1);
       if (j > i + 1) {
         if (i > run) out.push(esc(s.slice(run, i)));
-        out.push('<em>' + inline(s.slice(i + 1, j), link) + '</em>');
+        out.push('<em>');
+        inline(s.slice(i + 1, j), link, out);
+        out.push('</em>');
         i = j + 1;
         run = i;
       } else i++;
@@ -338,7 +345,9 @@ function inline(s, link) {
       const target = m === -1 ? '' : s.slice(k + 2, m);
       if (target !== '' && !WS_RE.test(target)) {
         if (i > run) out.push(esc(s.slice(run, i)));
-        out.push('<a href="' + esc(link(target)) + '">' + inline(s.slice(i + 1, k), link) + '</a>');
+        out.push('<a href="', esc(link(target)), '">');
+        inline(s.slice(i + 1, k), link, out);
+        out.push('</a>');
         i = m + 1;
         run = i;
         continue;
@@ -349,13 +358,20 @@ function inline(s, link) {
     i++;
   }
   if (n > run) out.push(esc(s.slice(run, n)));
-  return out.join('');
 }
 
 /** A heading line's level and text, or null (a heading's text is never empty). */
 function headingOf(line) {
   const m = HEADING.exec(line);
   return m === null || m[2] === '' ? null : { depth: m[1].length, text: m[2] };
+}
+
+/** A line as it is rendered: spaces and tabs at either end dropped. */
+function trimLine(line) {
+  const a = line.charCodeAt(0);
+  const b = line.charCodeAt(line.length - 1);
+  if ((a !== 32 && a !== 9) && (b !== 32 && b !== 9)) return line;
+  return line.replace(TRIM_LINE, '');
 }
 
 /**
@@ -382,7 +398,12 @@ function renderMarkdown(src, link, slugMemo) {
       if (fence !== null) {
         i++;
         let body = '';
-        while (i < L && !FENCE_CLOSE.test(lines[i])) body += esc(lines[i++]) + '\n';
+        while (i < L) {
+          const ln = lines[i];
+          if (ln.charCodeAt(0) === 96 && FENCE_CLOSE.test(ln)) break;
+          body += esc(ln) + '\n';
+          i++;
+        }
         i++;
         out.push(fence[1] === '' ? `<pre><code>${body}</code></pre>\n` : `<pre><code class="language-${fence[1]}">${body}</code></pre>\n`);
         continue;
@@ -393,8 +414,10 @@ function renderMarkdown(src, link, slugMemo) {
       if (m !== null && m[2] !== '') {
         const depth = m[1].length;
         const id = uniqueSlug(slugMemo(m[2]), ids);
-        const html = inline(m[2], link);
-        out.push(`<h${depth} id="${id}">${html}</h${depth}>\n`);
+        const h = [];
+        inline(m[2], link, h);
+        const html = h.join('');
+        out.push(`<h${depth} id="${id}">`, html, `</h${depth}>\n`);
         if (depth === 2 || depth === 3) toc.push({ level: depth, id, html });
         i++;
         continue;
@@ -414,18 +437,22 @@ function renderMarkdown(src, link, slugMemo) {
         while (i < L) {
           const m = isOrdered ? ORDERED.exec(lines[i]) : BULLET.exec(lines[i]);
           if (m !== null) {
-            parts.push([isOrdered ? m[2].replace(TRIM_LINE, '') : m[1].replace(TRIM_LINE, '')]);
+            parts.push([trimLine(isOrdered ? m[2] : m[1])]);
             i++;
           } else if (CONTINUED.test(lines[i])) {
-            parts[parts.length - 1].push(lines[i].replace(TRIM_LINE, ''));
+            parts[parts.length - 1].push(trimLine(lines[i]));
             i++;
           } else break;
         }
         const tag = isOrdered ? 'ol' : 'ul';
         const start = isOrdered && ordered[1] !== '1' ? Number(ordered[1]) : 1;
-        let body = isOrdered && start !== 1 ? `<ol start="${start}">\n` : `<${tag}>\n`;
-        for (const p of parts) body += `<li>${inline(p.join('\n'), link)}</li>\n`;
-        out.push(body + `</${tag}>\n`);
+        out.push(isOrdered && start !== 1 ? `<ol start="${start}">\n` : `<${tag}>\n`);
+        for (const p of parts) {
+          out.push('<li>');
+          inline(p.join('\n'), link, out);
+          out.push('</li>\n');
+        }
+        out.push(`</${tag}>\n`);
         continue;
       }
     } else if (c0 >= 48 && c0 <= 57) {
@@ -435,17 +462,21 @@ function renderMarkdown(src, link, slugMemo) {
         while (i < L) {
           const m = ORDERED.exec(lines[i]);
           if (m !== null) {
-            parts.push([m[2].replace(TRIM_LINE, '')]);
+            parts.push([trimLine(m[2])]);
             i++;
           } else if (CONTINUED.test(lines[i])) {
-            parts[parts.length - 1].push(lines[i].replace(TRIM_LINE, ''));
+            parts[parts.length - 1].push(trimLine(lines[i]));
             i++;
           } else break;
         }
         const start = ordered[1] !== '1' ? Number(ordered[1]) : 1;
-        let body = start !== 1 ? `<ol start="${start}">\n` : `<ol>\n`;
-        for (const p of parts) body += `<li>${inline(p.join('\n'), link)}</li>\n`;
-        out.push(body + `</ol>\n`);
+        out.push(start !== 1 ? `<ol start="${start}">\n` : '<ol>\n');
+        for (const p of parts) {
+          out.push('<li>');
+          inline(p.join('\n'), link, out);
+          out.push('</li>\n');
+        }
+        out.push('</ol>\n');
         continue;
       }
     }
@@ -453,19 +484,20 @@ function renderMarkdown(src, link, slugMemo) {
       if (QUOTE.test(line)) {
         const kept = [];
         while (i < L && QUOTE.test(lines[i])) {
-          const t = lines[i++].replace(QUOTE_STRIP, '').replace(TRIM_LINE, '');
+          const t = trimLine(lines[i++].replace(QUOTE_STRIP, ''));
           if (t !== '') kept.push(t);
         }
-        out.push(
-          kept.length === 0
-            ? '<blockquote>\n</blockquote>\n'
-            : `<blockquote>\n<p>${inline(kept.join('\n'), link)}</p>\n</blockquote>\n`,
-        );
+        if (kept.length === 0) out.push('<blockquote>\n</blockquote>\n');
+        else {
+          out.push('<blockquote>\n<p>');
+          inline(kept.join('\n'), link, out);
+          out.push('</p>\n</blockquote>\n');
+        }
         continue;
       }
     }
     // A paragraph: this line and the lines after it up to a blank line, a fence, a heading or a break.
-    const body = [line.replace(TRIM_LINE, '')];
+    const body = [trimLine(line)];
     i++;
     for (;;) {
       if (i >= L) break;
@@ -475,12 +507,14 @@ function renderMarkdown(src, link, slugMemo) {
       if (c === 96 && FENCE_OPEN.test(ln)) break;
       if (c === 35 && headingOf(ln) !== null) break;
       if ((c === 45 || c === 42) && HR.test(ln)) break;
-      body.push(ln.replace(TRIM_LINE, ''));
+      body.push(trimLine(ln));
       i++;
     }
-    const html = inline(body.join('\n'), link);
+    const p = [];
+    inline(body.join('\n'), link, p);
+    const html = p.join('');
     if (excerpt === null) excerpt = html;
-    out.push(`<p>${html}</p>\n`);
+    out.push('<p>', html, '</p>\n');
   }
   return { html: out.join(''), toc, excerpt: excerpt ?? '' };
 }
@@ -637,6 +671,30 @@ function compileNode(n, templates) {
     }
     case 'var': {
       const p = n.path;
+      if (p.length === 2) {
+        const a = p[0];
+        const b = p[1];
+        return (scope, out) => {
+          let s = scope;
+          while (s !== null && !Object.hasOwn(s.vars, a)) s = s.parent;
+          let v;
+          if (s === null) v = undefined;
+          else {
+            const v0 = s.vars[a];
+            v = v0 !== null && typeof v0 === 'object' && Object.hasOwn(v0, b) ? v0[b] : undefined;
+          }
+          out.push(typeof v === 'string' ? esc(v) : esc(textOf(v)));
+        };
+      }
+      if (p.length === 1) {
+        const a = p[0];
+        return (scope, out) => {
+          let s = scope;
+          while (s !== null && !Object.hasOwn(s.vars, a)) s = s.parent;
+          const v = s === null ? undefined : s.vars[a];
+          out.push(typeof v === 'string' ? esc(v) : esc(textOf(v)));
+        };
+      }
       return (scope, out) => {
         const v = lookup(scope, p);
         out.push(typeof v === 'string' ? esc(v) : esc(textOf(v)));
@@ -644,6 +702,29 @@ function compileNode(n, templates) {
     }
     case 'raw': {
       const p = n.path;
+      if (p.length === 2) {
+        const a = p[0];
+        const b = p[1];
+        return (scope, out) => {
+          let s = scope;
+          while (s !== null && !Object.hasOwn(s.vars, a)) s = s.parent;
+          let v;
+          if (s === null) v = undefined;
+          else {
+            const v0 = s.vars[a];
+            v = v0 !== null && typeof v0 === 'object' && Object.hasOwn(v0, b) ? v0[b] : undefined;
+          }
+          out.push(textOf(v));
+        };
+      }
+      if (p.length === 1) {
+        const a = p[0];
+        return (scope, out) => {
+          let s = scope;
+          while (s !== null && !Object.hasOwn(s.vars, a)) s = s.parent;
+          out.push(textOf(s === null ? undefined : s.vars[a]));
+        };
+      }
       return (scope, out) => {
         out.push(textOf(lookup(scope, p)));
       };
@@ -693,6 +774,11 @@ const dirOf = (path) => (path.includes('/') ? path.slice(0, path.lastIndexOf('/'
 
 /** `rel` (a link's path, "/"-separated) from the directory `dir` of a source, or null when it climbs out. */
 function resolvePath(dir, rel) {
+  // Fast path: no empty, "." or ".." segment, so the resolved path is dir + "/" + rel verbatim.
+  const c0 = rel.charCodeAt(0);
+  if (c0 !== 46 && c0 !== 47 && rel.charCodeAt(rel.length - 1) !== 47 && rel.indexOf('/.') === -1 && rel.indexOf('//') === -1) {
+    return dir === '' ? rel : dir + '/' + rel;
+  }
   const parts = dir === '' ? [] : dir.split('/');
   for (const seg of rel.split('/')) {
     if (seg === '' || seg === '.') continue;
@@ -810,7 +896,7 @@ export function run(input) {
   for (const s of kept) {
     const dir = dirOf(s.path);
     const link = (target) => {
-      if (SCHEME.test(target) || target.charCodeAt(0) === 47 || target.charCodeAt(0) === 35) return target;
+      if ((target.indexOf(':') !== -1 && SCHEME.test(target)) || target.charCodeAt(0) === 47 || target.charCodeAt(0) === 35) return target;
       const hash = target.indexOf('#');
       const rel = hash === -1 ? target : target.slice(0, hash);
       const frag = hash === -1 ? '' : target.slice(hash);
