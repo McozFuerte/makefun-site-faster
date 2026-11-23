@@ -391,7 +391,7 @@ function renderMarkdown(src, link, slugMemo) {
             parts.push([isOrdered ? m[2] : m[1]]);
             i++;
           } else if (CONTINUED.test(lines[i])) {
-            parts[parts.length - 1].push(lines[i]);
+            parts[parts.length - 1].push(lines[i].replace(TRIM_LINE, ''));
             i++;
           } else break;
         }
@@ -412,7 +412,7 @@ function renderMarkdown(src, link, slugMemo) {
             parts.push([m[2]]);
             i++;
           } else if (CONTINUED.test(lines[i])) {
-            parts[parts.length - 1].push(lines[i]);
+            parts[parts.length - 1].push(lines[i].replace(TRIM_LINE, ''));
             i++;
           } else break;
         }
