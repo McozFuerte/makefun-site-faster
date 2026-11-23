@@ -228,11 +228,14 @@ function countWords(s) {
   let n = 0;
   const L = s.length;
   let i = 0;
+  // ASCII fast scan: code units 14..126 are never JS \s; 9-13 and 32 are; the rest go through isWs.
+  const ws = (c) => (c > 126 ? isWs(c) : c === 32 || (c >= 9 && c <= 13));
   while (i < L) {
-    if (isWs(s.charCodeAt(i))) i++;
+    if (ws(s.charCodeAt(i))) i++;
     else {
       n++;
-      while (i < L && !isWs(s.charCodeAt(i))) i++;
+      do i++;
+      while (i < L && !ws(s.charCodeAt(i)));
     }
   }
   return Math.max(1, Math.ceil(n / 200));
