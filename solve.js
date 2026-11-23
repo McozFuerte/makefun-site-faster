@@ -213,7 +213,29 @@ const ORDERED = /^(\d{1,9})\. (.*)$/;
 const CONTINUED = /^ {2,}\S/;
 const TRIM_LINE = /^[ \t]+|[ \t]+$/g;
 const WS_RE = /\s/;
-const WORDS = /\S+/g;
+
+/** Whether a code unit is JS `\s` whitespace (exactly, for word counting). */
+function isWs(c) {
+  if (c === 32 || (c >= 9 && c <= 13)) return true;
+  if (c === 0xa0 || c === 0x1680) return true;
+  if (c >= 0x2000 && c <= 0x200a) return true;
+  return c === 0x2028 || c === 0x2029 || c === 0x202f || c === 0x205f || c === 0x3000 || c === 0xfeff;
+}
+
+/** The reading minutes of a body: its words (runs of non-whitespace) over 200, rounded up, at least 1. */
+function countWords(s) {
+  let n = 0;
+  const L = s.length;
+  let i = 0;
+  while (i < L) {
+    if (isWs(s.charCodeAt(i))) i++;
+    else {
+      n++;
+      while (i < L && !isWs(s.charCodeAt(i))) i++;
+    }
+  }
+  return Math.max(1, Math.ceil(n / 200));
+}
 
 /** The characters a backslash escapes (checked by code). */
 const ESCAPABLE = new Set(['\\', '`', '*', '_', '[', ']', '(', ')', '#', '+', '-', '.', '!', '>']);
@@ -256,8 +278,12 @@ function findSingleStar(s, from) {
   return -1;
 }
 
+/** Markdown's inline specials (backslash, backtick, star, bracket): a string with none renders as its escaped self. */
+const MD_SPECIAL = new RegExp('[`\\\\*\\[]', '');
+
 /** `s` rendered inline; `link(target)` is a link's href. */
 function inline(s, link) {
+  if (!MD_SPECIAL.test(s)) return esc(s);
   const out = [];
   let i = 0;
   const n = s.length;
@@ -388,7 +414,7 @@ function renderMarkdown(src, link, slugMemo) {
         while (i < L) {
           const m = isOrdered ? ORDERED.exec(lines[i]) : BULLET.exec(lines[i]);
           if (m !== null) {
-            parts.push([isOrdered ? m[2] : m[1]]);
+            parts.push([isOrdered ? m[2].replace(TRIM_LINE, '') : m[1].replace(TRIM_LINE, '')]);
             i++;
           } else if (CONTINUED.test(lines[i])) {
             parts[parts.length - 1].push(lines[i].replace(TRIM_LINE, ''));
@@ -409,7 +435,7 @@ function renderMarkdown(src, link, slugMemo) {
         while (i < L) {
           const m = ORDERED.exec(lines[i]);
           if (m !== null) {
-            parts.push([m[2]]);
+            parts.push([m[2].replace(TRIM_LINE, '')]);
             i++;
           } else if (CONTINUED.test(lines[i])) {
             parts[parts.length - 1].push(lines[i].replace(TRIM_LINE, ''));
@@ -720,7 +746,7 @@ export function run(input) {
   const sources = [];
   const statics = [];
   for (const f of files) {
-    if (f.path.endsWith('.md')) sources.push({ path: f.path, text: f.content.replace(CRLF, '\n'), data: null, body: '', post: false, layout: '', slug: '', outDir: '', url: '', html: '', toc: null, excerpt: '', newer: null, older: null, tagRefs: null, reading: 1 });
+    if (f.path.endsWith('.md')) sources.push({ path: f.path, text: f.content.indexOf('\r') === -1 ? f.content : f.content.replace(CRLF, '\n'), data: null, body: '', post: false, layout: '', slug: '', outDir: '', url: '', html: '', toc: null, excerpt: '', newer: null, older: null, tagRefs: null, reading: 1 });
     else statics.push(f);
   }
 
@@ -801,8 +827,7 @@ export function run(input) {
     s.html = md.html;
     s.toc = md.toc;
     s.excerpt = md.excerpt;
-    const w = s.body.match(WORDS);
-    s.reading = Math.max(1, Math.ceil((w === null ? 0 : w.length) / 200));
+    s.reading = countWords(s.body);
   }
 
   // 6. The posts, newest first and then by slug.
@@ -882,9 +907,16 @@ export function run(input) {
 
   const output = {};
   for (const s of kept)
-    output[`${s.outDir}/index.html`] = render(s.layout, {
+    output[s.outDir + '/index.html'] = render(s.layout, {
       page: {
-        ...cardOf(s),
+        title: s.data.title,
+        url: s.url,
+        date: s.data.date ?? '',
+        date_long: s.data.date === undefined ? '' : longMemo(s.data.date),
+        summary: s.data.summary ?? '',
+        excerpt: s.excerpt,
+        reading_minutes: s.reading,
+        tags: s.tagRefs.map((t) => ({ name: t.name, slug: t.slug, url: t.url })),
         slug: s.slug,
         content: s.html,
         toc: s.toc,
